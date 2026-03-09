@@ -15,11 +15,24 @@ Copper State Party Network
 FINAL PRODUCT STYLE PROTOTYPE
 
 Core System
-Customer request → Dispatch → Vendor accepts → Job locked → Payment → Completion
+Customer calls you → You enter request → Dispatch to vendors in that area → First vendor accepts → Job locks into vendor calendar → Payment → Completion
 */
 
 const cities = ["Phoenix","Mesa","Chandler","Gilbert","Glendale","Tempe","Scottsdale"];
 const extras = ["tablecloths","tent","bounce house","lights","coolers"];
+
+// --- Small realism upgrade ---
+// Hot requests show a response window so vendors know urgency
+const HOT_RESPONSE_SECONDS = 60;
+
+function secondsSince(ts){
+  return Math.floor((Date.now() - ts)/1000);
+}
+
+function secondsRemaining(ts){
+  const remaining = HOT_RESPONSE_SECONDS - secondsSince(ts);
+  return remaining > 0 ? remaining : 0;
+}
 
 const initialVendors = [
   {
@@ -28,7 +41,14 @@ const initialVendors = [
     city:"Mesa",
     phone:"(480)555‑2011",
     available:true,
-    products:["chairs","tables","tablecloths","tent"],
+    // Inventory by specific item type (Option B)
+    inventory:[
+      { item:"white folding chair", total:120, reserved:0 },
+      { item:"black resin chair", total:40, reserved:0 },
+      { item:"6ft rectangle table", total:25, reserved:0 },
+      { item:"60in round table", total:12, reserved:0 },
+      { item:"standard bounce house", total:2, reserved:0 }
+    ],
     rating:4.8,
     travelCities:["Mesa","Tempe","Gilbert"],
     location:{ x: 72, y: 58 },
@@ -44,7 +64,12 @@ const initialVendors = [
     city:"Chandler",
     phone:"(480)555‑2044",
     available:true,
-    products:["chairs","tables","bounce house"],
+    inventory:[
+      { item:"white folding chair", total:80, reserved:0 },
+      { item:"6ft rectangle table", total:18, reserved:0 },
+      { item:"spiderman bounce house", total:1, reserved:0 },
+      { item:"water slide bounce house", total:1, reserved:0 }
+    ],
     rating:4.6,
     travelCities:["Chandler","Gilbert","Tempe"],
     location:{ x: 74, y: 72 },
@@ -59,7 +84,12 @@ const initialVendors = [
     city:"Phoenix",
     phone:"(602)555‑1881",
     available:true,
-    products:["chairs","tables","tent"],
+    inventory:[
+      { item:"white folding chair", total:100, reserved:0 },
+      { item:"black resin chair", total:30, reserved:0 },
+      { item:"6ft rectangle table", total:20, reserved:0 },
+      { item:"event tent 20x20", total:2, reserved:0 }
+    ],
     rating:4.7,
     travelCities:["Phoenix","Glendale","Scottsdale","Tempe"],
     location:{ x: 48, y: 38 },
@@ -116,12 +146,39 @@ function vendorHasCoverage(vendor, city){
   return vendor.city === city || vendor.travelCities?.includes(city);
 }
 
+function vendorIsPrimaryForCity(vendor, city){
+  return vendor.city === city;
+}
+
+function getAvailableInventoryByCategory(vendor){
+  const totals = { chairs:0, tables:0, tent:0, "bounce house":0, tablecloths:999, lights:999, coolers:999 };
+
+  (vendor.inventory || []).forEach(entry => {
+    const name = (entry.item || "").toLowerCase();
+    const available = (entry.total || 0) - (entry.reserved || 0);
+
+    if(name.includes("chair")) totals.chairs += available;
+    if(name.includes("table")) totals.tables += available;
+    if(name.includes("tent")) totals.tent += available;
+    if(name.includes("bounce house") || name.includes("water slide")) totals["bounce house"] += available;
+  });
+
+  return totals;
+}
+
 function vendorHasNeededProducts(vendor, request){
-  const needs = [];
-  if(request.chairs > 0) needs.push("chairs");
-  if(request.tables > 0) needs.push("tables");
-  (request.extras || []).forEach(item => needs.push(item));
-  return needs.every(item => vendor.products.includes(item) || extras.includes(item) === false);
+  const available = getAvailableInventoryByCategory(vendor);
+
+  if((request.chairs || 0) > available.chairs) return false;
+  if((request.tables || 0) > available.tables) return false;
+
+  const extrasNeeded = request.extras || [];
+  for(const item of extrasNeeded){
+    if(item === "tent" && available.tent <= 0) return false;
+    if(item === "bounce house" && available["bounce house"] <= 0) return false;
+  }
+
+  return true;
 }
 
 function getOpenBlocks(vendor, date){
@@ -171,6 +228,7 @@ if(!form.name||!form.phone||!form.address||!form.date)return;
 const id=Date.now();
 
 const newReq={
+createdAt:Date.now(),
 
 id,
 customer:form.name,
@@ -182,7 +240,7 @@ tables:Number(form.tables||0),
 extras:form.extras,
 date:form.date,
 notes:form.notes,
-status:form.hotRequest?"hot":"open",
+status:"open",
 assigned:null,
 vendorPrice:0,
 customerPrice:0,
@@ -220,17 +278,52 @@ x.id===req.id
 :x
 
 ));
+
+setVendors(v=>v.map(vendor=>vendor.id===currentVendor.id
+?{
+  ...vendor,
+  inventory:(vendor.inventory || []).map(entry => {
+    const name = (entry.item || "").toLowerCase();
+    if(req.chairs > 0 && name.includes("chair")){
+      const reserve = Math.min(req.chairs, (entry.total || 0) - (entry.reserved || 0));
+      return { ...entry, reserved:(entry.reserved || 0) + reserve };
+    }
+    if(req.tables > 0 && name.includes("table")){
+      const reserve = Math.min(req.tables, (entry.total || 0) - (entry.reserved || 0));
+      return { ...entry, reserved:(entry.reserved || 0) + reserve };
+    }
+    if(req.extras.includes("tent") && name.includes("tent")){
+      return { ...entry, reserved:(entry.reserved || 0) + 1 };
+    }
+    if(req.extras.includes("bounce house") && (name.includes("bounce house") || name.includes("water slide"))){
+      return { ...entry, reserved:(entry.reserved || 0) + 1 };
+    }
+    return entry;
+  }),
+  schedule:[
+    ...(vendor.schedule || []),
+    {
+      date:req.date,
+      start:"12:00",
+      end:"15:00",
+      label:`${req.customer} • ${req.city}`
+    }
+  ]
+}
+:vendor
+));
 };
 
 const completeJob=(id)=>{
 setRequests(r=>r.map(x=>x.id===id?{...x,status:"completed"}:x));
 };
 
-const openRequests=requests.filter(r=>!r.assigned&&(r.status==="open"||r.status==="broadcast"));
+const openRequests=requests.filter(r=>!r.assigned&&(r.status==="broadcast"||r.status==="hot"));
 
 const vendorRequests=openRequests.filter(r=>
   vendorHasCoverage(currentVendor, r.city) &&
-  vendorHasNeededProducts(currentVendor, r)
+  vendorHasNeededProducts(currentVendor, r) &&
+  vendorIsPrimaryForCity(currentVendor, r.city)
 );
 
 const vendorJobs=requests.filter(r=>r.assigned===currentVendor.id);
@@ -243,8 +336,10 @@ const recommendedHotMatches = hotRequests
   .filter(r => hotSearch ? r.city.toLowerCase().includes(hotSearch.toLowerCase()) || r.customer.toLowerCase().includes(hotSearch.toLowerCase()) : true)
   .map(request => ({
     request,
-    vendors: [...vendors]
-      .filter(v => vendorHasCoverage(v, request.city) && vendorHasNeededProducts(v, request))
+    primaryVendors: [...vendors]
+      .filter(v => vendorIsPrimaryForCity(v, request.city) && vendorHasNeededProducts(v, request)),
+    backupVendors: [...vendors]
+      .filter(v => vendorHasCoverage(v, request.city) && !vendorIsPrimaryForCity(v, request.city) && vendorHasNeededProducts(v, request))
       .sort((a,b) => vendorAvailabilityScore(b, request) - vendorAvailabilityScore(a, request))
   }));
 
@@ -255,7 +350,94 @@ const profit=revenue-vendorCost;
 
 return(
 
-<div className="min-h-screen bg-slate-50 p-6">
+<div className="min-h-screen bg-slate-50">
+
+<section className="border-b bg-gradient-to-b from-orange-50 to-white">
+  <div className="max-w-7xl mx-auto px-6 py-6 flex items-center justify-between">
+    <div className="flex items-center gap-3">
+      <Logo/>
+      <div>
+        <p className="text-sm text-slate-500">Copper State Party Network</p>
+        <h1 className="text-lg font-bold">Arizona's Party Rental Broker Network</h1>
+      </div>
+    </div>
+    <div className="hidden md:flex items-center gap-3">
+      <Button variant="outline">Join the Vendor Network</Button>
+      <a href="tel:+14805552000"><Button><Phone className="w-4 h-4 mr-2"/>Call to Book</Button></a>
+    </div>
+  </div>
+
+  <div className="max-w-7xl mx-auto px-6 py-16 grid gap-10 lg:grid-cols-[1.1fr,0.9fr] items-center">
+    <div className="space-y-6">
+      <Badge className="bg-orange-100 text-orange-800 border-0">Live in Phoenix Metro</Badge>
+      <div className="space-y-4">
+        <h2 className="text-4xl md:text-5xl font-bold tracking-tight text-slate-900">Fast party rental booking across Phoenix, Mesa, Chandler, Gilbert, and more.</h2>
+        <p className="text-lg text-slate-600 max-w-2xl">Customers call Copper State Party Network directly. You take the request, send it to vendors in that service area, and the first available vendor to accept gets the job and has it logged into their calendar.</p>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <a href="tel:+14805552000"><Button className="rounded-xl px-6"><Phone className="w-4 h-4 mr-2"/>Call to Book</Button></a>
+        <Button variant="outline" className="rounded-xl px-6">Join the Vendor Network</Button>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4">
+        <div className="rounded-2xl border bg-white p-4">
+          <p className="text-sm text-slate-500">Coverage</p>
+          <p className="text-xl font-semibold">Phoenix Metro</p>
+        </div>
+        <div className="rounded-2xl border bg-white p-4">
+          <p className="text-sm text-slate-500">Core Rentals</p>
+          <p className="text-xl font-semibold">Chairs & Tables</p>
+        </div>
+        <div className="rounded-2xl border bg-white p-4">
+          <p className="text-sm text-slate-500">Response Type</p>
+          <p className="text-xl font-semibold">Hot Requests</p>
+        </div>
+        <div className="rounded-2xl border bg-white p-4">
+          <p className="text-sm text-slate-500">Model</p>
+          <p className="text-xl font-semibold">Broker Network</p>
+        </div>
+      </div>
+    </div>
+
+    <div className="rounded-3xl border bg-white p-6 shadow-sm space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-slate-500">How booking works</p>
+          <h3 className="text-2xl font-semibold">Call us and we handle the request.</h3>
+        </div>
+        <Badge className="bg-red-100 text-red-800"><Flame className="w-3 h-3 mr-1"/>First-come vendor dispatch</Badge>
+      </div>
+      <div className="space-y-3 text-sm text-slate-600">
+        <div className="rounded-2xl border bg-slate-50 p-4">1. Customer calls Copper State Party Network.</div>
+        <div className="rounded-2xl border bg-slate-50 p-4">2. You enter the request details into the system.</div>
+        <div className="rounded-2xl border bg-slate-50 p-4">3. The request goes out to vendors in that area.</div>
+        <div className="rounded-2xl border bg-slate-50 p-4">4. The first vendor to accept gets the job.</div>
+        <div className="rounded-2xl border bg-slate-50 p-4">5. The job is locked into that vendor’s calendar with the customer details.</div>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <a href="tel:+14805552000"><Button className="rounded-xl"><Phone className="w-4 h-4 mr-2"/>Call Us Now</Button></a>
+        <Button variant="outline" className="rounded-xl">Join the Vendor Network</Button>
+      </div>
+      <p className="text-xs text-slate-500">The intake form below is for your internal use after you speak with the customer by phone.</p>
+    </div>
+  </div>
+</section>
+
+<section className="max-w-7xl mx-auto px-6 py-10 grid gap-6 md:grid-cols-3">
+  <Card className="rounded-3xl border-0 shadow-sm">
+    <CardHeader><CardTitle>For Customers</CardTitle></CardHeader>
+    <CardContent className="text-sm text-slate-600">Customers call you directly. You gather the event details and create the request in the system for them.</CardContent>
+  </Card>
+  <Card className="rounded-3xl border-0 shadow-sm">
+    <CardHeader><CardTitle>For Vendors</CardTitle></CardHeader>
+    <CardContent className="text-sm text-slate-600">Vendors receive requests in their service area on a first-come, first-served basis. The first vendor to accept gets the booking.</CardContent>
+  </Card>
+  <Card className="rounded-3xl border-0 shadow-sm">
+    <CardHeader><CardTitle>For Operations</CardTitle></CardHeader>
+    <CardContent className="text-sm text-slate-600">Use the intake form, dispatch board, map coverage, hot request workflow, and calendar blocks to route each phone request to the first available vendor.</CardContent>
+  </Card>
+</section>
+
+<div className="p-6">
 
 <div className="max-w-7xl mx-auto space-y-6">
 
@@ -281,7 +463,7 @@ return(
 <Tabs defaultValue="customer">
 
 <TabsList className="grid grid-cols-4">
-<TabsTrigger value="customer">Customer</TabsTrigger>
+<TabsTrigger value="customer">Phone Intake</TabsTrigger>
 <TabsTrigger value="vendor">Vendor</TabsTrigger>
 <TabsTrigger value="admin">Admin</TabsTrigger>
 <TabsTrigger value="ops">Map & Calendar</TabsTrigger>
@@ -290,7 +472,7 @@ return(
 <TabsContent value="customer">
 
 <Card>
-<CardHeader><CardTitle>Submit Rental Request</CardTitle></CardHeader>
+<CardHeader><CardTitle>Phone Intake Request Entry</CardTitle></CardHeader>
 <CardContent className="space-y-4">
 
 <Input placeholder="Customer name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/>
@@ -348,7 +530,7 @@ Mark as Hot Request
 <SelectContent>{vendors.map(v=><SelectItem key={v.id} value={String(v.id)}>{v.name}</SelectItem>)}</SelectContent>
 </Select>
 
-<h3 className="font-semibold">Incoming Requests</h3>
+<h3 className="font-semibold">Broadcast Requests</h3>
 
 {vendorRequests.map(req=>(
 
@@ -363,23 +545,37 @@ Mark as Hot Request
 
 <p className="text-sm">{req.chairs} chairs • {req.tables} tables</p>
 
-<Button onClick={()=>vendorAccept(req)}>Accept Job</Button>
+<Button onClick={()=>vendorAccept(req)}>Accept First and Lock Job</Button>
 
 </div>
 
 ))}
 
-<h3 className="font-semibold mt-6">My Jobs</h3>
+<h3 className="font-semibold mt-6">My Calendar & Booked Jobs</h3>
+
+<div className="rounded-xl border p-4 space-y-3">
+  <p className="font-medium">Calendar for {currentVendor?.name}</p>
+  <div className="grid grid-cols-7 gap-2 text-center text-xs">
+    {getOpenBlocks(currentVendor, selectedDate).map(block => (
+      <div key={`${currentVendor?.id}-${block.slot}`} className={`rounded-lg px-2 py-2 border ${block.busy ? "bg-slate-200 text-slate-600" : "bg-green-50 text-green-700 border-green-200"}`}>
+        <div>{block.slot}</div>
+        <div className="mt-1 font-medium">{block.busy ? "Booked" : "Open"}</div>
+      </div>
+    ))}
+  </div>
+  <p className="text-xs text-slate-500">Any accepted standard request or hot intake is automatically locked into this vendor calendar.</p>
+</div>
 
 {vendorJobs.map(job=>(
 
 <div key={job.id} className="border p-3 rounded-xl">
 
-<p className="font-medium">{job.customer}</p>
+<p className="font-medium flex items-center gap-2">{job.customer}{job.hotRequest && <Badge className="bg-red-100 text-red-800">Hot Intake</Badge>}</p>
 
 <Badge className={statusColor(job.status)}>{job.status}</Badge>
 
 <p className="text-sm">Vendor payout {money(job.vendorPrice)}</p>
+<p className="text-xs text-slate-500 mt-1">{job.date} • {job.city} • {job.address}</p>
 
 {job.status!=='completed'&&(
 <Button onClick={()=>completeJob(job.id)}>Complete Job</Button>
@@ -397,7 +593,7 @@ Mark as Hot Request
 <TabsContent value="admin">
 
 <Card>
-<CardHeader><CardTitle>Admin Dispatch Board</CardTitle></CardHeader>
+<CardHeader><CardTitle>Admin Dispatch Board — First Come First Serve</CardTitle></CardHeader>
 <CardContent className="space-y-4">
 
 {requests.map(r=>(
@@ -414,7 +610,7 @@ Mark as Hot Request
 <div className="flex gap-2">
 
 {(r.status==='open' || r.status==='hot')&&(
-<Button onClick={()=>dispatchRequest(r.id)}>{r.hotRequest ? "Dispatch Hot" : "Dispatch"}</Button>
+<Button onClick={()=>dispatchRequest(r.id)}>{r.hotRequest ? "Broadcast Hot Request" : "Broadcast to Area Vendors"}</Button>
 )}
 
 </div>
@@ -504,7 +700,7 @@ Mark as Hot Request
 
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2"><Flame size={18}/>Hot Request Board</CardTitle>
+        <CardTitle className="flex items-center gap-2"><Flame size={18}/>Hot Intake Board</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex gap-3">
@@ -513,18 +709,22 @@ Mark as Hot Request
         </div>
         {recommendedHotMatches.length === 0 ? (
           <div className="rounded-xl border border-dashed p-4 text-sm text-slate-500">No open hot requests right now.</div>
-        ) : recommendedHotMatches.map(({ request, vendors: matches }) => (
+        ) : recommendedHotMatches.map(({ request, primaryVendors, backupVendors }) => (
           <div key={request.id} className="rounded-xl border p-4 space-y-3">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="font-semibold flex items-center gap-2">{request.customer}<Badge className="bg-red-100 text-red-800">Hot Request</Badge></p>
+                <p className="font-semibold flex items-center gap-2">{request.customer}<Badge className="bg-red-100 text-red-800">Hot Request</Badge>{request.createdAt && <Badge className="bg-orange-100 text-orange-800">{secondsRemaining(request.createdAt)}s</Badge>}</p>
                 <p className="text-sm text-slate-600">{request.city} • {request.date}</p>
                 <p className="text-sm">{request.chairs} chairs • {request.tables} tables {request.extras.length ? `• ${request.extras.join(", ")}` : ""}</p>
               </div>
-              <Button variant="outline"><TimerReset className="w-4 h-4 mr-2"/>Quick Dispatch</Button>
+              <Button variant="outline"><TimerReset className="w-4 h-4 mr-2"/>View Primary Then Backup Matches</Button>
             </div>
             <div className="space-y-2">
-              {matches.slice(0,3).map(match => {
+              <div className="rounded-lg border bg-orange-50 p-3">
+              <p className="text-sm font-medium text-slate-900">Primary city vendors first</p>
+              <p className="text-xs text-slate-500">The system should send this hot intake to vendors whose main city matches the request first. Backup travel vendors are below.</p>
+            </div>
+            {(primaryVendors.length ? primaryVendors : backupVendors).slice(0,3).map(match => {
                 const openCount = getOpenBlocks(match, request.date).filter(b => !b.busy).length;
                 return (
                   <div key={match.id} className="flex items-center justify-between rounded-lg bg-slate-50 border p-3">
@@ -535,7 +735,7 @@ Mark as Hot Request
                     </div>
                     <div className="flex gap-2">
                       <Button size="sm" variant="outline">Call</Button>
-                      <Button size="sm">Dispatch</Button>
+                      <Button size="sm">Call Then Dispatch</Button>
                     </div>
                   </div>
                 )
@@ -552,6 +752,21 @@ Mark as Hot Request
 </Tabs>
 
 </div>
+
+</div>
+
+<footer className="border-t bg-white mt-12">
+  <div className="max-w-7xl mx-auto px-6 py-8 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+    <div>
+      <p className="font-semibold text-slate-900">Copper State Party Network</p>
+      <p className="text-sm text-slate-500">Arizona party rental broker network for chairs, tables, tents, bounce houses, and hot requests.</p>
+    </div>
+    <div className="flex gap-3">
+      <Button variant="outline" className="rounded-xl">Join the Vendor Network</Button>
+      <a href="tel:+14805552000"><Button className="rounded-xl"><Phone className="w-4 h-4 mr-2"/>Call to Book</Button></a>
+    </div>
+  </div>
+</footer>
 
 </div>
 
