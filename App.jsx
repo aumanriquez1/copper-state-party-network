@@ -181,6 +181,53 @@ function vendorHasNeededProducts(vendor, request){
   return true;
 }
 
+function adjustInventoryForRequest(inventory, req, mode = "reserve"){
+  let chairsLeft = req.chairs || 0;
+  let tablesLeft = req.tables || 0;
+  let tentLeft = req.extras?.includes("tent") ? 1 : 0;
+  let bounceLeft = req.extras?.includes("bounce house") ? 1 : 0;
+
+  return (inventory || []).map(entry => {
+    const name = (entry.item || "").toLowerCase();
+    const currentReserved = entry.reserved || 0;
+    const maxAvailable = Math.max((entry.total || 0) - currentReserved, 0);
+
+    if(name.includes("chair") && chairsLeft > 0){
+      const amount = mode === "reserve"
+        ? Math.min(chairsLeft, maxAvailable)
+        : Math.min(chairsLeft, currentReserved);
+      chairsLeft -= amount;
+      return { ...entry, reserved: mode === "reserve" ? currentReserved + amount : currentReserved - amount };
+    }
+
+    if(name.includes("table") && tablesLeft > 0){
+      const amount = mode === "reserve"
+        ? Math.min(tablesLeft, maxAvailable)
+        : Math.min(tablesLeft, currentReserved);
+      tablesLeft -= amount;
+      return { ...entry, reserved: mode === "reserve" ? currentReserved + amount : currentReserved - amount };
+    }
+
+    if(name.includes("tent") && tentLeft > 0){
+      const amount = mode === "reserve"
+        ? Math.min(tentLeft, maxAvailable)
+        : Math.min(tentLeft, currentReserved);
+      tentLeft -= amount;
+      return { ...entry, reserved: mode === "reserve" ? currentReserved + amount : currentReserved - amount };
+    }
+
+    if((name.includes("bounce house") || name.includes("water slide")) && bounceLeft > 0){
+      const amount = mode === "reserve"
+        ? Math.min(bounceLeft, maxAvailable)
+        : Math.min(bounceLeft, currentReserved);
+      bounceLeft -= amount;
+      return { ...entry, reserved: mode === "reserve" ? currentReserved + amount : currentReserved - amount };
+    }
+
+    return entry;
+  });
+}
+
 function getOpenBlocks(vendor, date){
   const blocks = vendor.schedule?.filter(s => s.date === date) || [];
   return timeSlots.map(slot => {
@@ -282,24 +329,7 @@ x.id===req.id
 setVendors(v=>v.map(vendor=>vendor.id===currentVendor.id
 ?{
   ...vendor,
-  inventory:(vendor.inventory || []).map(entry => {
-    const name = (entry.item || "").toLowerCase();
-    if(req.chairs > 0 && name.includes("chair")){
-      const reserve = Math.min(req.chairs, (entry.total || 0) - (entry.reserved || 0));
-      return { ...entry, reserved:(entry.reserved || 0) + reserve };
-    }
-    if(req.tables > 0 && name.includes("table")){
-      const reserve = Math.min(req.tables, (entry.total || 0) - (entry.reserved || 0));
-      return { ...entry, reserved:(entry.reserved || 0) + reserve };
-    }
-    if(req.extras.includes("tent") && name.includes("tent")){
-      return { ...entry, reserved:(entry.reserved || 0) + 1 };
-    }
-    if(req.extras.includes("bounce house") && (name.includes("bounce house") || name.includes("water slide"))){
-      return { ...entry, reserved:(entry.reserved || 0) + 1 };
-    }
-    return entry;
-  }),
+  inventory:adjustInventoryForRequest(vendor.inventory, req, "reserve"),
   schedule:[
     ...(vendor.schedule || []),
     {
@@ -315,7 +345,18 @@ setVendors(v=>v.map(vendor=>vendor.id===currentVendor.id
 };
 
 const completeJob=(id)=>{
+const job = requests.find(x=>x.id===id);
+if(!job) return;
+
 setRequests(r=>r.map(x=>x.id===id?{...x,status:"completed"}:x));
+
+setVendors(v=>v.map(vendor=>vendor.id===job.assigned
+?{
+  ...vendor,
+  inventory:adjustInventoryForRequest(vendor.inventory, job, "release")
+}
+:vendor
+));
 };
 
 const openRequests=requests.filter(r=>!r.assigned&&(r.status==="broadcast"||r.status==="hot"));
@@ -367,7 +408,7 @@ return(
     </div>
   </div>
 
-  <div className="max-w-7xl mx-auto px-6 py-16 grid gap-10 lg:grid-cols-[1.1fr,0.9fr] items-center">
+  <div className="max-w-7xl mx-auto px-4 md:px-6 py-12 md:py-16 grid gap-10 lg:grid-cols-[1.1fr,0.9fr] items-center">
     <div className="space-y-6">
       <Badge className="bg-orange-100 text-orange-800 border-0">Live in Phoenix Metro</Badge>
       <div className="space-y-4">
@@ -422,7 +463,7 @@ return(
   </div>
 </section>
 
-<section className="max-w-7xl mx-auto px-6 py-10 grid gap-6 md:grid-cols-3">
+<section className="max-w-7xl mx-auto px-4 md:px-6 py-8 md:py-10 grid gap-4 md:gap-6 md:grid-cols-3">
   <Card className="rounded-3xl border-0 shadow-sm">
     <CardHeader><CardTitle>For Customers</CardTitle></CardHeader>
     <CardContent className="text-sm text-slate-600">Customers call you directly. You gather the event details and create the request in the system for them.</CardContent>
@@ -437,11 +478,11 @@ return(
   </Card>
 </section>
 
-<div className="p-6">
+<div className="p-4 pb-24 md:pb-6 md:p-6">
 
 <div className="max-w-7xl mx-auto space-y-6">
 
-<header className="bg-white p-6 rounded-2xl border flex justify-between items-center">
+<header className="bg-white/95 backdrop-blur p-4 md:p-6 rounded-3xl border border-slate-200 shadow-sm flex flex-col gap-4 md:flex-row md:justify-between md:items-center">
 
 <div className="flex items-center gap-3">
 <Logo/>
@@ -451,7 +492,7 @@ return(
 </div>
 </div>
 
-<div className="flex gap-6">
+<div className="grid grid-cols-2 sm:grid-cols-4 gap-3 md:flex md:gap-6 w-full md:w-auto">
 <Metric label="Requests" value={requests.length} icon={<Users size={16}/>}/>
 <Metric label="Booked" value={requests.filter(r=>r.status==='booked').length} icon={<CheckCircle2 size={16}/>}/>
 <Metric label="Profit" value={money(profit)} icon={<DollarSign size={16}/>}/>
@@ -462,32 +503,40 @@ return(
 
 <Tabs defaultValue="customer">
 
-<TabsList className="grid grid-cols-4">
-<TabsTrigger value="customer">Phone Intake</TabsTrigger>
-<TabsTrigger value="vendor">Vendor</TabsTrigger>
-<TabsTrigger value="admin">Admin</TabsTrigger>
-<TabsTrigger value="ops">Map & Calendar</TabsTrigger>
+<div className="md:hidden fixed bottom-3 left-3 right-3 z-30 rounded-3xl border border-slate-200 bg-white/95 backdrop-blur shadow-xl p-2">
+  <TabsList className="grid grid-cols-4 rounded-2xl bg-slate-100 p-1 h-auto">
+    <TabsTrigger value="customer" className="rounded-xl data-[state=active]:bg-white data-[state=active]:shadow-sm text-[11px] py-3 flex flex-col gap-1">📥<span>Intake</span></TabsTrigger>
+    <TabsTrigger value="vendor" className="rounded-xl data-[state=active]:bg-white data-[state=active]:shadow-sm text-[11px] py-3 flex flex-col gap-1">🚚<span>Vendor</span></TabsTrigger>
+    <TabsTrigger value="admin" className="rounded-xl data-[state=active]:bg-white data-[state=active]:shadow-sm text-[11px] py-3 flex flex-col gap-1">📋<span>Admin</span></TabsTrigger>
+    <TabsTrigger value="ops" className="rounded-xl data-[state=active]:bg-white data-[state=active]:shadow-sm text-[11px] py-3 flex flex-col gap-1">🗺️<span>Ops</span></TabsTrigger>
+  </TabsList>
+</div>
+
+<TabsList className="hidden md:grid grid-cols-4 rounded-2xl bg-slate-100 p-1">
+<TabsTrigger value="customer" className="rounded-xl data-[state=active]:bg-white data-[state=active]:shadow-sm">Phone Intake</TabsTrigger>
+<TabsTrigger value="vendor" className="rounded-xl data-[state=active]:bg-white data-[state=active]:shadow-sm">Vendor</TabsTrigger>
+<TabsTrigger value="admin" className="rounded-xl data-[state=active]:bg-white data-[state=active]:shadow-sm">Admin</TabsTrigger>
+<TabsTrigger value="ops" className="rounded-xl data-[state=active]:bg-white data-[state=active]:shadow-sm">Map & Calendar</TabsTrigger>
 </TabsList>
 
 <TabsContent value="customer">
 
-<Card>
-<CardHeader><CardTitle>Phone Intake Request Entry</CardTitle></CardHeader>
-<CardContent className="space-y-4">
+<Card className="rounded-3xl border-slate-200 shadow-sm"><CardHeader><CardTitle className="text-2xl">Phone Intake Request Entry</CardTitle></CardHeader>
+<CardContent className="space-y-4 p-4 md:p-6">
 
-<Input placeholder="Customer name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/>
-<Input placeholder="Phone" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})}/>
+<Input className="h-11 rounded-xl" placeholder="Customer name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/>
+<Input className="h-11 rounded-xl" placeholder="Phone" value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})}/>
 
 <Select value={form.city} onValueChange={v=>setForm({...form,city:v})}>
-<SelectTrigger><SelectValue/></SelectTrigger>
+<SelectTrigger className="h-11 rounded-xl"><SelectValue/></SelectTrigger>
 <SelectContent>{cities.map(c=><SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
 </Select>
 
-<Input placeholder="Address" value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/>
-<Input type="date" value={form.date} onChange={e=>{setForm({...form,date:e.target.value});setSelectedDate(e.target.value);}}/>
+<Input className="h-11 rounded-xl" placeholder="Address" value={form.address} onChange={e=>setForm({...form,address:e.target.value})}/>
+<Input className="h-11 rounded-xl" type="date" value={form.date} onChange={e=>{setForm({...form,date:e.target.value});setSelectedDate(e.target.value);}}/>
 
-<Input type="number" placeholder="Chairs" value={form.chairs} onChange={e=>setForm({...form,chairs:e.target.value})}/>
-<Input type="number" placeholder="Tables" value={form.tables} onChange={e=>setForm({...form,tables:e.target.value})}/>
+<Input className="h-11 rounded-xl" type="number" placeholder="Chairs" value={form.chairs} onChange={e=>setForm({...form,chairs:e.target.value})}/>
+<Input className="h-11 rounded-xl" type="number" placeholder="Tables" value={form.tables} onChange={e=>setForm({...form,tables:e.target.value})}/>
 
 <div className="grid grid-cols-2 gap-2">
 {extras.map(x=>{
@@ -510,9 +559,9 @@ setForm({...form,extras:checked?form.extras.filter(e=>e!==x):[...form.extras,x]}
 Mark as Hot Request
 </label>
 
-<Textarea placeholder="Notes" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
+<Textarea className="min-h-[120px] rounded-2xl" placeholder="Notes" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
 
-<Button onClick={submitRequest}>{form.hotRequest ? "Create Hot Request" : "Create Request"}</Button>
+<Button onClick={submitRequest} className="h-12 rounded-2xl w-full md:w-auto">{form.hotRequest ? "Create Hot Request" : "Create Request"}</Button>
 
 </CardContent>
 </Card>
@@ -521,12 +570,11 @@ Mark as Hot Request
 
 <TabsContent value="vendor">
 
-<Card>
-<CardHeader><CardTitle>Vendor Dashboard</CardTitle></CardHeader>
-<CardContent className="space-y-4">
+<Card className="rounded-3xl border-slate-200 shadow-sm"><CardHeader><CardTitle className="text-2xl">Vendor Dashboard</CardTitle></CardHeader>
+<CardContent className="space-y-4 p-4 md:p-6">
 
 <Select value={vendorView} onValueChange={setVendorView}>
-<SelectTrigger><SelectValue/></SelectTrigger>
+<SelectTrigger className="h-11 rounded-xl"><SelectValue/></SelectTrigger>
 <SelectContent>{vendors.map(v=><SelectItem key={v.id} value={String(v.id)}>{v.name}</SelectItem>)}</SelectContent>
 </Select>
 
@@ -534,7 +582,7 @@ Mark as Hot Request
 
 {vendorRequests.map(req=>(
 
-<div key={req.id} className="border p-3 rounded-xl">
+<div key={req.id} className="border border-slate-200 bg-slate-50 p-4 rounded-2xl shadow-sm">
 
 <p className="font-medium">{req.customer}</p>
 
@@ -545,7 +593,7 @@ Mark as Hot Request
 
 <p className="text-sm">{req.chairs} chairs • {req.tables} tables</p>
 
-<Button onClick={()=>vendorAccept(req)}>Accept First and Lock Job</Button>
+<Button onClick={()=>vendorAccept(req)} className="mt-3 h-11 rounded-2xl w-full md:w-auto">Accept First and Lock Job</Button>
 
 </div>
 
@@ -553,7 +601,7 @@ Mark as Hot Request
 
 <h3 className="font-semibold mt-6">My Calendar & Booked Jobs</h3>
 
-<div className="rounded-xl border p-4 space-y-3">
+<div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3 shadow-sm">
   <p className="font-medium">Calendar for {currentVendor?.name}</p>
   <div className="grid grid-cols-7 gap-2 text-center text-xs">
     {getOpenBlocks(currentVendor, selectedDate).map(block => (
@@ -566,9 +614,29 @@ Mark as Hot Request
   <p className="text-xs text-slate-500">Any accepted standard request or hot intake is automatically locked into this vendor calendar.</p>
 </div>
 
+<div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3 shadow-sm">
+  <p className="font-medium text-lg">Inventory for {currentVendor?.name}</p>
+  <div className="space-y-2">
+    {(currentVendor?.inventory || []).map(entry => {
+      const available = (entry.total || 0) - (entry.reserved || 0);
+      return (
+        <div key={entry.item} className="flex items-center justify-between rounded-lg border bg-slate-50 px-3 py-2 text-sm">
+          <div>
+            <p className="font-medium capitalize">{entry.item}</p>
+            <p className="text-xs text-slate-500">Total: {entry.total} • Reserved: {entry.reserved || 0}</p>
+          </div>
+          <Badge className={available > 0 ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}>
+            Available: {available}
+          </Badge>
+        </div>
+      )
+    })}
+  </div>
+</div>
+
 {vendorJobs.map(job=>(
 
-<div key={job.id} className="border p-3 rounded-xl">
+<div key={job.id} className="border border-slate-200 bg-slate-50 p-4 rounded-2xl shadow-sm">
 
 <p className="font-medium flex items-center gap-2">{job.customer}{job.hotRequest && <Badge className="bg-red-100 text-red-800">Hot Intake</Badge>}</p>
 
@@ -578,7 +646,7 @@ Mark as Hot Request
 <p className="text-xs text-slate-500 mt-1">{job.date} • {job.city} • {job.address}</p>
 
 {job.status!=='completed'&&(
-<Button onClick={()=>completeJob(job.id)}>Complete Job</Button>
+<Button onClick={()=>completeJob(job.id)} className="mt-3 h-11 rounded-2xl w-full md:w-auto">Complete Job</Button>
 )}
 
 </div>
@@ -592,13 +660,12 @@ Mark as Hot Request
 
 <TabsContent value="admin">
 
-<Card>
-<CardHeader><CardTitle>Admin Dispatch Board — First Come First Serve</CardTitle></CardHeader>
-<CardContent className="space-y-4">
+<Card className="rounded-3xl border-slate-200 shadow-sm"><CardHeader><CardTitle className="text-2xl">Admin Dispatch Board — First Come First Serve</CardTitle></CardHeader>
+<CardContent className="space-y-4 p-4 md:p-6">
 
 {requests.map(r=>(
 
-<div key={r.id} className="border rounded-xl p-3 flex justify-between items-start gap-4">
+<div key={r.id} className="border border-slate-200 bg-slate-50 rounded-2xl p-4 flex justify-between items-start gap-4 shadow-sm">
 
 <div>
 <p className="font-medium flex items-center gap-2">{r.customer}{r.hotRequest && <Badge className="bg-red-100 text-red-800"><Flame className="w-3 h-3 mr-1"/>Hot Request</Badge>}</p>
@@ -610,7 +677,7 @@ Mark as Hot Request
 <div className="flex gap-2">
 
 {(r.status==='open' || r.status==='hot')&&(
-<Button onClick={()=>dispatchRequest(r.id)}>{r.hotRequest ? "Broadcast Hot Request" : "Broadcast to Area Vendors"}</Button>
+<Button onClick={()=>dispatchRequest(r.id)} className="h-11 rounded-2xl w-full md:w-auto">{r.hotRequest ? "Broadcast Hot Request" : "Broadcast to Area Vendors"}</Button>
 )}
 
 </div>
@@ -626,11 +693,11 @@ Mark as Hot Request
 
 <TabsContent value="ops">
 <div className="grid grid-cols-1 xl:grid-cols-[1.1fr,0.9fr] gap-6">
-  <Card>
+  <Card className="rounded-3xl border-slate-200 shadow-sm">
     <CardHeader>
-      <CardTitle className="flex items-center gap-2"><Navigation size={18}/>Vendor Coverage Map</CardTitle>
+      <CardTitle className="flex items-center gap-2 text-2xl"><Navigation size={18}/>Vendor Coverage Map</CardTitle>
     </CardHeader>
-    <CardContent className="space-y-4">
+    <CardContent className="space-y-4 p-4 md:p-6">
       <div className="flex gap-3 items-center">
         <Select value={mapCityFilter} onValueChange={setMapCityFilter}>
           <SelectTrigger className="w-56"><SelectValue/></SelectTrigger>
@@ -661,6 +728,9 @@ Mark as Hot Request
                   <p className="text-xs text-slate-500 mt-1">Travels to: {vendor.travelCities.join(", ")}</p>
                   <div className="mt-2 flex items-center gap-2 text-sm"><Star className="w-4 h-4 text-amber-500"/>{vendor.rating} rating</div>
                   <div className="mt-2 text-sm">Open blocks on {selectedDate}: <span className="font-semibold">{openCount}</span></div>
+                  <div className="mt-2 text-xs text-slate-500">
+                    Chairs available: {getAvailableInventoryByCategory(vendor).chairs} • Tables available: {getAvailableInventoryByCategory(vendor).tables}
+                  </div>
                 </div>
               </div>
             </div>
@@ -671,11 +741,11 @@ Mark as Hot Request
   </Card>
 
   <div className="space-y-6">
-    <Card>
+    <Card className="rounded-3xl border-slate-200 shadow-sm">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2"><Clock3 size={18}/>Availability Blocks</CardTitle>
+        <CardTitle className="flex items-center gap-2 text-2xl"><Clock3 size={18}/>Availability Blocks</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4 p-4 md:p-6">
         {vendors.map(vendor => (
           <div key={vendor.id} className="rounded-xl border p-3 space-y-3">
             <div className="flex items-center justify-between">
@@ -698,14 +768,14 @@ Mark as Hot Request
       </CardContent>
     </Card>
 
-    <Card>
+    <Card className="rounded-3xl border-slate-200 shadow-sm">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2"><Flame size={18}/>Hot Intake Board</CardTitle>
+        <CardTitle className="flex items-center gap-2 text-2xl"><Flame size={18}/>Hot Intake Board</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex gap-3">
-          <Input placeholder="Search hot requests" value={hotSearch} onChange={e=>setHotSearch(e.target.value)} />
-          <Button variant="outline"><Search className="w-4 h-4 mr-2"/>Find</Button>
+      <CardContent className="space-y-4 p-4 md:p-6">
+        <div className="flex flex-col md:flex-row gap-3">
+          <Input className="h-11 rounded-xl" placeholder="Search hot requests" value={hotSearch} onChange={e=>setHotSearch(e.target.value)} />
+          <Button variant="outline" className="h-11 rounded-2xl"><Search className="w-4 h-4 mr-2"/>Find</Button>
         </div>
         {recommendedHotMatches.length === 0 ? (
           <div className="rounded-xl border border-dashed p-4 text-sm text-slate-500">No open hot requests right now.</div>
@@ -733,9 +803,9 @@ Mark as Hot Request
                       <p className="text-xs text-slate-500">{match.city} • {match.phone}</p>
                       <p className="text-xs text-slate-500">Open blocks: {openCount} • Rating: {match.rating}</p>
                     </div>
-                    <div className="flex gap-2">
-                      <Button size="sm" variant="outline">Call</Button>
-                      <Button size="sm">Call Then Dispatch</Button>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <Button size="sm" variant="outline" className="rounded-xl">Call</Button>
+                      <Button size="sm" className="rounded-xl">Call Then Dispatch</Button>
                     </div>
                   </div>
                 )
@@ -775,7 +845,7 @@ Mark as Hot Request
 
 function Metric({label,value,icon}){
 return(
-<div className="flex flex-col items-center">
+<div className="flex flex-col items-center rounded-2xl bg-slate-50 border border-slate-200 px-3 py-3 min-w-0">
 <div className="flex items-center gap-1 text-sm">{icon}{label}</div>
 <div className="font-semibold">{value}</div>
 </div>
